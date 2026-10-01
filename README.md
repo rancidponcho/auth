@@ -1,4 +1,4 @@
-# Auth
+## Auth
 
 Requires a C11 compiler, CMake 3.22.1 or newer, and Ninja.
 
@@ -23,3 +23,10 @@ SDK's 'public/' directory to the include path and link its
 Steamworks library.
 
 The server build does not compile the client files.
+
+After 'auth_init()' succeeds, call 'auth_request()' to start 
+a ticket request. Call 'auth_update()' each frame to process
+replies, and 'auth_shutdown()' when exiting.
+
+The Steam implementation currently prints the request result
+Server verification not implemented.

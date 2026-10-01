@@ -28,6 +28,7 @@ void auth_shutdown(void);
 
 // returns true on started request
 bool auth_request(void);
+void auth_update(void);
 
 #ifdef __cplusplus
 }
