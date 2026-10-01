@@ -12,3 +12,14 @@ cmake --build build
 
 On Windows, run `build/auth.exe`. For a release build, use
 `-DCMAKE_BUILD_TYPE=Release`.
+
+## Client
+
+'client/auth.h' provides client interface.
+
+For Steam, add 'client/steam.cpp' to your app's build. It
+requires a C++11 compiler and the Steamworks SDK. Add the 
+SDK's 'public/' directory to the include path and link its
+Steamworks library.
+
+The server build does not compile the client files.
