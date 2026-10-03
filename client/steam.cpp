@@ -5,7 +5,7 @@
  *
  */
 
-#include "auth.h"
+#include "provider.h"
 
 #include <steam/steam_api.h>
 #include <stdio.h>
@@ -16,12 +16,8 @@ static HAuthTicket ticket = k_HAuthTicketInvalid;
 static unsigned char ticket_data[GetTicketForWebApiResponse_t::k_nCubTicketMaxLength];
 static int ticket_size = 0;
 
-AuthStatus auth_status(void)
-{
-    return status;
-}
 
-bool auth_init(void)
+bool provider_init(void)
 {
     SteamErrMsg error = {0};
     
@@ -34,7 +30,7 @@ bool auth_init(void)
     return true;
 }
 
-void auth_shutdown(void)
+void provider_shutdown(void)
 {
     if (ticket != k_HAuthTicketInvalid) {
         SteamUser()->CancelAuthTicket(ticket);
@@ -51,7 +47,7 @@ void auth_shutdown(void)
 /*
  * Request a ticket from Steam.
  */
-bool auth_request(void)
+bool provider_request(void)
 {
     ISteamUser *user = SteamUser();
 
@@ -107,7 +103,7 @@ static void on_auth_ticket(const GetTicketForWebApiResponse_t *response)
 }
 
 // Process Steam callbacks and update ticket status
-void auth_update(void)
+void provider_update(void)
 {
     HSteamPipe pipe = SteamAPI_GetHSteamPipe();
     SteamAPI_ManualDispatch_RunFrame(pipe);
@@ -121,4 +117,28 @@ void auth_update(void)
 
         SteamAPI_ManualDispatch_FreeLastCallback(pipe);
     }
+}
+
+AuthStatus provider_status(void)
+{
+    return status;
+}
+
+/*
+ * Provides a read-only pointer to the ticket data
+ */
+const unsigned char *provider_ticket_data(int *size)
+{
+    if (!size) {
+        return NULL;
+    }
+
+    *size = 0;
+
+    if (status != AUTH_READY) {
+        return NULL;
+    }
+
+    *size = ticket_size;
+    return ticket_data;
 }
