@@ -19,6 +19,13 @@
 
 #include <stdbool.h>
 
+typedef enum AuthStatus {
+    AUTH_IDLE,
+    AUTH_PENDING,
+    AUTH_READY,
+    AUTH_FAILED
+} AuthStatus;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -29,6 +36,10 @@ void auth_shutdown(void);
 // returns true on started request
 bool auth_request(void);
 void auth_update(void);
+
+AuthStatus auth_status(void);
+
+const unsigned char *auth_ticket_data(int *size);
 
 #ifdef __cplusplus
 }

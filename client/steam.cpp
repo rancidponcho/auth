@@ -11,9 +11,15 @@
 #include <stdio.h>
 #include <string.h>
 
+static AuthStatus status = AUTH_IDLE;
 static HAuthTicket ticket = k_HAuthTicketInvalid;
 static unsigned char ticket_data[GetTicketForWebApiResponse_t::k_nCubTicketMaxLength];
 static int ticket_size = 0;
+
+AuthStatus auth_status(void)
+{
+    return status;
+}
 
 bool auth_init(void)
 {
@@ -37,21 +43,37 @@ void auth_shutdown(void)
 
     ticket_size = 0;
 
+    status = AUTH_IDLE;
+
     SteamAPI_Shutdown();
 }
 
+/*
+ * Request a ticket from Steam.
+ */
 bool auth_request(void)
 {
     ISteamUser *user = SteamUser();
 
-    if (!user || ticket != k_HAuthTicketInvalid) {
+    if (ticket != k_HAuthTicketInvalid) {
+        return false;
+    }
+
+    if (!user) {
+        status = AUTH_FAILED;
         return false;
     }
 
     ticket_size = 0;
     ticket = user->GetAuthTicketForWebApi("auth");
 
-    return ticket != k_HAuthTicketInvalid;
+    if (ticket == k_HAuthTicketInvalid) {
+        status = AUTH_FAILED;
+        return false;
+    }
+    
+    status = AUTH_PENDING;
+    return true;
 }
 
 /*
@@ -67,12 +89,15 @@ static void on_auth_ticket(const GetTicketForWebApiResponse_t *response)
 
     if (response->m_eResult != k_EResultOK) {
         fprintf(stderr, "Steam ticket failed: %d\n", (int)response->m_eResult);
+        status = AUTH_FAILED;
     } else if (response->m_cubTicket <= 0 || response->m_cubTicket > (int)sizeof(ticket_data)) {
         fprintf(stderr, "Stream ticket size is invalid\n");
+        status = AUTH_FAILED;
     } else {
         ticket_size = response->m_cubTicket;
         memcpy(ticket_data, response->m_rgubTicket, (size_t)ticket_size);
         printf("Steam ticket received (%d bytes)\n", ticket_size);
+        status = AUTH_READY;
         return;
     }
 
@@ -81,6 +106,7 @@ static void on_auth_ticket(const GetTicketForWebApiResponse_t *response)
     ticket_size = 0;
 }
 
+// Process Steam callbacks and update ticket status
 void auth_update(void)
 {
     HSteamPipe pipe = SteamAPI_GetHSteamPipe();
@@ -96,6 +122,3 @@ void auth_update(void)
         SteamAPI_ManualDispatch_FreeLastCallback(pipe);
     }
 }
-
-
-

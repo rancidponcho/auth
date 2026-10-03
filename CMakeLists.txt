@@ -6,14 +6,24 @@ endif()
 
 project(auth LANGUAGES C)
 
-add_executable(auth main.c)
-set_target_properties(auth PROPERTIES
-    C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
-)
-if(MSVC)
-    target_compile_options(auth PRIVATE /W4)
-else()
-    target_compile_options(auth PRIVATE -Wall -Wextra -Wpedantic)
+option(AUTH_BUILD_CLIENT "Build the auth client library" OFF)
+option(AUTH_BUILD_SERVER "Build the auth server" ${PROJECT_IS_TOP_LEVEL})
+
+if(AUTH_BUILD_CLIENT)
+    enable_language(CXX)
+    add_subdirectory(client)
 endif()
 
-install(TARGETS auth RUNTIME DESTINATION bin COMPONENT auth)
+if(AUTH_BUILD_SERVER)
+    add_executable(auth main.c)
+    set_target_properties(auth PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
+    )
+    if(MSVC)
+        target_compile_options(auth PRIVATE /W4)
+    else()
+        target_compile_options(auth PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    install(TARGETS auth RUNTIME DESTINATION bin COMPONENT auth)
+endif()
