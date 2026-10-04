@@ -92,6 +92,35 @@ static int health_handler(struct mg_connection *connection, void *user_data)
     return 200;
 }
 
+static int steam_login_handler(struct mg_connection *connection, void *user_data)
+{
+    (void)user_data;
+
+    // Inspecting recieved request
+    const struct mg_request_info* request = mg_get_request_info(connection);
+
+    if (strcmp(request->local_uri, "/auth/steam") != 0) {
+        return 0;
+    }
+
+    // Accept data submitted using POST
+    if (strcmp(request->request_method, "POST") != 0) {
+        mg_printf(connection,
+            "HTTP/1.1 405 Method Not Allowed\r\n"
+            "Allow: POST\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n\r\n");
+        return 405;
+    }
+
+    // Read and verification will go here //
+    mg_printf(connection,
+        "HTTP/1.1 501 Not Implemented\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n\r\n");
+    return 501;
+}
+
 int main(void)
 {
     /*
@@ -147,6 +176,10 @@ int main(void)
      * separate from the server-wide user data argument to mg_start.
      */
     mg_set_request_handler(server, "/health", health_handler, NULL);
+
+    // Eventually provider auth implementations will take the place of
+    // health_handler completely. No need for client to request server health
+    mg_set_request_handler(server, "/auth/steam", steam_login_handler, NULL);
 
     puts("Auth server listening on http://127.0.0.1:8080");
     puts("Press Enter to stop.");
