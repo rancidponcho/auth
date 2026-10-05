@@ -92,8 +92,8 @@ function(auth_stage_runtime target)
     endif()
 
     # Installing a macOS app already copies the library inside its bundle.
-    get_target_property(steam_bundle ${target} MACOSX_BUNDLE)
-    if(NOT steam_bundle)
+    get_target_property(target_is_bundle ${target} MACOSX_BUNDLE)
+    if(NOT target_is_bundle)
         install(FILES "$<TARGET_FILE:Steamworks::SteamAPI>"
             DESTINATION bin COMPONENT client)
     endif()

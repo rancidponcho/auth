@@ -1,18 +1,6 @@
 /*
- * Client authentication
- *
- * Include this header to request login data from a platform. Steam 
- * provides a ticket atm. The auth server checks that data before 
- * logging the user in.
- *
- * CMake selects one provider implementation for the build. That source 
- * file defines the functions and includes provider.h, of which's functions
- * are called from here. Provider SDK  headers, callbacks, and internal 
- * state stay in that provider's respective file.
- *
- * Requests take some time to finish. Successfully starting a request
- * doesn't mean the login data has arrived yet, or that our server has 
- * accepted it.
+ * auth_status() tracks login attempt
+ * AUTH_READY is reserved for a confirmed login from server
  */
 
 #ifndef AUTH_CLIENT_H
@@ -32,11 +20,10 @@ extern "C" {
 #endif
 
 bool auth_init(void);
-void auth_shutdown(void);
 bool auth_request(void);
 void auth_update(void);
-
 AuthStatus auth_status(void);
+void auth_shutdown(void);
 
 #ifdef __cplusplus
 }

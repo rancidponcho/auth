@@ -8,11 +8,11 @@ extern "C" {
 #endif
 
 bool provider_init(void);
-void provider_shutdown(void);
 bool provider_request(void);
 void provider_update(void);
 AuthStatus provider_status(void);
-const unsigned char *provider_ticket_data(int *size);
+const unsigned char *provider_ticket_data(int *out_size);
+void provider_shutdown(void);
 
 #ifdef __cplusplus
 }
