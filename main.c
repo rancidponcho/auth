@@ -5,6 +5,7 @@
 
 #include <curl/curl.h>
 #include <civetweb.h>
+#include <jansson.h>
 
 typedef struct {
     char body[8192];
@@ -215,7 +216,56 @@ static int steam_login_handler(struct mg_connection *connection, void *user_data
 
     printf("Steam verification response received (%zu bytes)\n", response.body_size);
 
-    // Steam response still needs to be parsed and checked
+    // parse steam response
+    json_error_t parse_error;
+    json_t* root = json_loadb(response.body, response.body_size, JSON_REJECT_DUPLICATES, &parse_error);
+    if(!root) {
+        fprintf(stderr, "Could not parse Steam JSON: %s\n", parse_error.text);
+        mg_send_http_error(connection, 502, "Invalid response from Steam");
+        return 502;
+    }
+
+    // reject error responses
+    json_t* steam_reply = json_object_get(root, "response");
+
+    if (!json_is_object(steam_reply) || json_object_get(steam_reply, "error")) {
+        fprintf(stderr, "Steam returned an error or unexpected response\n");
+        json_decref(root);
+        mg_send_http_error(connection, 502, "Could not verify with Steam");
+        return 502;
+    }
+
+    json_t* params = json_object_get(steam_reply, "params");
+
+    // check result and copy steam ID
+    const char* result = json_string_value(json_object_get(params, "result"));
+
+    json_t* steam_id_value = json_object_get(params, "steamid");
+    const char* steam_id_text = json_string_value(steam_id_value);
+    size_t steam_id_length = json_string_length(steam_id_value);
+
+    char steam_id[21];
+
+    if (!json_is_object(params) ||
+        !result ||
+        strcmp(result, "OK") != 0 ||
+        !steam_id_text ||
+        steam_id_length == 0 ||
+        steam_id_length >= sizeof(steam_id) ||
+        strspn(steam_id_text, "0123456789") != steam_id_length) {
+        fprintf(stderr, "Steam verification result is missing or invalid\n");
+        json_decref(root);
+        mg_send_http_error(connection, 502, "Unexpected verification result");
+        return 502;
+    }
+
+    // Keep ID after releasing json data
+    memcpy(steam_id, steam_id_text, steam_id_length + 1);
+    json_decref(root);
+
+    printf("Steam ticket verified for SteamID %s\n", steam_id);
+
+    // Account and session creation are not implemented
     mg_printf(connection,
         "HTTP/1.1 501 Not Implemented\r\n"
         "Content-Length: 0\r\n"

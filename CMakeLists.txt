@@ -34,8 +34,15 @@ if(AUTH_BUILD_SERVER)
     
     find_package(CURL REQUIRED COMPONENTS HTTPS AsynchDNS)
 
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
+
     add_executable(auth main.c)
-    target_link_libraries(auth PRIVATE civetweb-c-library CURL::libcurl)
+    target_link_libraries(auth PRIVATE
+        civetweb-c-library 
+        CURL::libcurl
+        PkgConfig::JANSSON
+    )
 
     set_target_properties(auth PROPERTIES
         C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
