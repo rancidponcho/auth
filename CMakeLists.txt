@@ -32,8 +32,10 @@ if(AUTH_BUILD_SERVER)
     FetchContent_MakeAvailable(civetweb)
     unset(CMAKE_POLICY_VERSION_MINIMUM)
     
+    find_package(CURL REQUIRED COMPONENTS HTTPS AsynchDNS)
+
     add_executable(auth main.c)
-    target_link_libraries(auth PRIVATE civetweb-c-library)
+    target_link_libraries(auth PRIVATE civetweb-c-library CURL::libcurl)
 
     set_target_properties(auth PROPERTIES
         C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO

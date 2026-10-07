@@ -138,6 +138,21 @@ const unsigned char *provider_ticket_data(int *out_size)
     return ticket_data;
 }
 
+void provider_cancel(void)
+{
+    if (ticket_handle != k_HAuthTicketInvalid) {
+        ISteamUser* user = SteamUser();
+
+        if (user) {
+            user->CancelAuthTicket(ticket_handle);
+        }
+    }
+
+    ticket_handle = k_HAuthTicketInvalid;
+    ticket_size = 0;
+    ticket_status = AUTH_IDLE;
+}
+
 void provider_shutdown(void)
 {
     if (ticket_handle != k_HAuthTicketInvalid) {

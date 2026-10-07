@@ -138,6 +138,7 @@ void auth_update(void)
     if (provider_status() == AUTH_FAILED) {
         login_status = AUTH_FAILED;
         login_request_cleanup();
+        provider_cancel();
         return;
     }
 
@@ -147,6 +148,9 @@ void auth_update(void)
         if (!start_ticket_upload()) {
             login_status = AUTH_FAILED;
             fprintf(stderr, "Could not start ticket upload\n");
+            login_request_cleanup();
+            provider_cancel();
+            return;
         }
     }
 
@@ -163,6 +167,7 @@ void auth_update(void)
         login_status = AUTH_FAILED;
         fprintf(stderr, "HTTP update failed: %s\n", curl_multi_strerror(update_result));
         login_request_cleanup();
+        provider_cancel();
         return;
     }
 
@@ -199,6 +204,10 @@ void auth_update(void)
 
         // Cleanup invalidates the notice and clears the active request.
         login_request_cleanup();
+
+        if (login_status == AUTH_FAILED) {
+            provider_cancel();
+        }
     }
 }
 
