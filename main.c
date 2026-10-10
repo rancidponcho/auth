@@ -7,6 +7,8 @@
 #include <civetweb.h>
 #include <jansson.h>
 
+#include "database.h"
+
 typedef struct {
     char body[8192];
     size_t body_size;
@@ -264,6 +266,18 @@ static int steam_login_handler(struct mg_connection *connection, void *user_data
     json_decref(root);
 
     printf("Steam ticket verified for SteamID %s\n", steam_id);
+
+    // Open database connection
+    PGconn* database_connection = database_connect();
+    if (!database_connection) {
+        mg_send_http_error(connection, 503, "Database unavailable");
+        return 503;
+    }
+
+    puts("Connected to PostgreSQL");
+
+    PQfinish(database_connection);
+
 
     // Account and session creation are not implemented
     mg_printf(connection,
