@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <inttypes.h>
 
 #include <curl/curl.h>
 #include <civetweb.h>
@@ -77,7 +78,7 @@ static bool request_steam_verification(const char* ticket_hex, SteamResponse* re
     if (curl_easy_setopt(request, CURLOPT_URL, request_url) != CURLE_OK ||
         curl_easy_setopt(request, CURLOPT_HTTPHEADER, headers) != CURLE_OK ||
         curl_easy_setopt(request, CURLOPT_PROTOCOLS_STR, "https") != CURLE_OK ||
-        curl_easy_setopt(request, CURLOPT_CONNECTTIMEOUT, 3L) != CURLE_OK || // 3 second timeout for connection
+        curl_easy_setopt(request, CURLOPT_CONNECTTIMEOUT, 3L) != CURLE_OK || // 3 second timeout for client_connection
         curl_easy_setopt(request, CURLOPT_TIMEOUT, 5L) != CURLE_OK ||
         curl_easy_setopt(request, CURLOPT_NOSIGNAL, 1L) != CURLE_OK ||
         curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, receive_steam_response) != CURLE_OK || // callback
@@ -114,12 +115,12 @@ static bool request_steam_verification(const char* ticket_hex, SteamResponse* re
 
 
 // Checks HTTP availability, not Steam or database health.
-static int health_handler(struct mg_connection *connection, void *user_data)
+static int health_handler(struct mg_connection *client_connection, void *user_data)
 {
     (void)user_data;
 
     // Borrowed request info; valid for this callback.
-    const struct mg_request_info *request_info = mg_get_request_info(connection);
+    const struct mg_request_info *request_info = mg_get_request_info(client_connection);
    
     // Route matching can include longer paths; handle only the exact path.
     if (strcmp(request_info->local_uri, "/health") != 0) {
@@ -127,7 +128,7 @@ static int health_handler(struct mg_connection *connection, void *user_data)
     }
 
     if (strcmp(request_info->request_method, "GET") != 0) {
-        mg_printf(connection,
+        mg_printf(client_connection,
             "HTTP/1.1 405 Method Not Allowed\r\n"
             "Allow: GET\r\n"
             "Content-Length: 0\r\n"
@@ -137,7 +138,7 @@ static int health_handler(struct mg_connection *connection, void *user_data)
     }
 
     // Content-Length counts the three body bytes in "ok\n".
-    mg_printf(connection,
+    mg_printf(client_connection,
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/plain\r\n"
         "Content-Length: 3\r\n"
@@ -146,18 +147,18 @@ static int health_handler(struct mg_connection *connection, void *user_data)
     return 200;
 }
 
-static int steam_login_handler(struct mg_connection *connection, void *user_data)
+static int steam_login_handler(struct mg_connection *client_connection, void *user_data)
 {
     (void)user_data;
 
-    const struct mg_request_info* request_info = mg_get_request_info(connection);
+    const struct mg_request_info* request_info = mg_get_request_info(client_connection);
 
     if (strcmp(request_info->local_uri, "/auth/steam") != 0) {
         return 0;
     }
 
     if (strcmp(request_info->request_method, "POST") != 0) {
-        mg_printf(connection,
+        mg_printf(client_connection,
             "HTTP/1.1 405 Method Not Allowed\r\n"
             "Allow: POST\r\n"
             "Content-Length: 0\r\n"
@@ -170,17 +171,17 @@ static int steam_login_handler(struct mg_connection *connection, void *user_data
     long long content_length = request_info->content_length;
     
     if (content_length < 0) {
-        mg_send_http_error(connection, 411, "Content-Length is required");
+        mg_send_http_error(client_connection, 411, "Content-Length is required");
         return 411;
     }
 
     if (content_length == 0) {
-        mg_send_http_error(connection, 400, "Ticket body is empty");
+        mg_send_http_error(client_connection, 400, "Ticket body is empty");
         return 400;
     }
 
     if (content_length > (long long)sizeof(ticket_data)) {
-        mg_send_http_error(connection, 413, "Ticket body is too large");
+        mg_send_http_error(client_connection, 413, "Ticket body is too large");
         return 413;
     }
 
@@ -188,10 +189,10 @@ static int steam_login_handler(struct mg_connection *connection, void *user_data
     size_t received_bytes = 0;
     // A read can return only part of the body.
     while (received_bytes < expected_bytes) {
-        int bytes_read = mg_read(connection, ticket_data + received_bytes, expected_bytes - received_bytes);
+        int bytes_read = mg_read(client_connection, ticket_data + received_bytes, expected_bytes - received_bytes);
 
         if (bytes_read <= 0) {
-            mg_send_http_error(connection, 400, "Ticket body is incomplete");
+            mg_send_http_error(client_connection, 400, "Ticket body is incomplete");
             return 400;
         }
 
@@ -212,7 +213,7 @@ static int steam_login_handler(struct mg_connection *connection, void *user_data
     SteamResponse response = {0};
 
     if (!request_steam_verification(ticket_hex, &response)) {
-        mg_send_http_error(connection, 502, "Could not query Steam");
+        mg_send_http_error(client_connection, 502, "Could not query Steam");
         return 502;
     }
 
@@ -223,7 +224,7 @@ static int steam_login_handler(struct mg_connection *connection, void *user_data
     json_t* root = json_loadb(response.body, response.body_size, JSON_REJECT_DUPLICATES, &parse_error);
     if(!root) {
         fprintf(stderr, "Could not parse Steam JSON: %s\n", parse_error.text);
-        mg_send_http_error(connection, 502, "Invalid response from Steam");
+        mg_send_http_error(client_connection, 502, "Invalid response from Steam");
         return 502;
     }
 
@@ -233,7 +234,7 @@ static int steam_login_handler(struct mg_connection *connection, void *user_data
     if (!json_is_object(steam_reply) || json_object_get(steam_reply, "error")) {
         fprintf(stderr, "Steam returned an error or unexpected response\n");
         json_decref(root);
-        mg_send_http_error(connection, 502, "Could not verify with Steam");
+        mg_send_http_error(client_connection, 502, "Could not verify with Steam");
         return 502;
     }
 
@@ -257,7 +258,7 @@ static int steam_login_handler(struct mg_connection *connection, void *user_data
         strspn(steam_id_text, "0123456789") != steam_id_length) {
         fprintf(stderr, "Steam verification result is missing or invalid\n");
         json_decref(root);
-        mg_send_http_error(connection, 502, "Unexpected verification result");
+        mg_send_http_error(client_connection, 502, "Unexpected verification result");
         return 502;
     }
 
@@ -267,20 +268,65 @@ static int steam_login_handler(struct mg_connection *connection, void *user_data
 
     printf("Steam ticket verified for SteamID %s\n", steam_id);
 
-    // Open database connection
+    // Open database client_connection
     PGconn* database_connection = database_connect();
     if (!database_connection) {
-        mg_send_http_error(connection, 503, "Database unavailable");
+        mg_send_http_error(client_connection, 503, "Database unavailable");
+        return 503;
+    }
+    puts("Connected to PostgreSQL");
+
+    // Find internal ID associated with steam account
+    int64_t player_id = 0;
+    DatabaseLookupResult lookup_result = database_find_player(
+        database_connection, 
+        AUTH_PROVIDER_STEAM, 
+        steam_id, 
+        &player_id);
+
+    if (lookup_result == DATABASE_LOOKUP_ERROR) {
+        PQfinish(database_connection);
+        mg_send_http_error(client_connection, 503, "Account lookup failed");
         return 503;
     }
 
-    puts("Connected to PostgreSQL");
+    if (lookup_result == DATABASE_LOOKUP_NOT_FOUND) {
+        DatabaseCreateResult create_result = database_create_player(
+            database_connection, 
+            AUTH_PROVIDER_STEAM,
+            steam_id,
+            &player_id);
+
+        if (create_result == DATABASE_CREATE_ERROR) {
+            PQfinish(database_connection);
+            mg_send_http_error(client_connection, 503, "Account creation failed");
+            return 503;
+        }
+
+        if (create_result == DATABASE_CREATE_CONFLICT) {
+            // another request created account first
+            lookup_result = database_find_player(
+                database_connection,
+                AUTH_PROVIDER_STEAM,
+                steam_id,
+                &player_id);
+
+            if (lookup_result != DATABASE_LOOKUP_FOUND) {
+                PQfinish(database_connection);
+                mg_send_http_error(client_connection, 503, "Could not resolve account");
+                return 503;
+            }
+        } else {
+            printf("Created player ID: %" PRId64 "\n", player_id);
+        }
+    }
 
     PQfinish(database_connection);
 
+    printf("Resolved player ID: %" PRId64 "\n", player_id);
 
-    // Account and session creation are not implemented
-    mg_printf(connection,
+    // Session creation is not implemented
+    mg_printf(client_connection,
         "HTTP/1.1 501 Not Implemented\r\n"
         "Content-Length: 0\r\n"
         "Connection: close\r\n\r\n");
