@@ -33,6 +33,15 @@ DatabaseCreateResult database_create_player(
     const char* provider_user_id,
     int64_t* out_player_id);
 
+typedef enum DatabaseAccessResult {
+    DATABASE_ACCESS_ERROR,
+    DATABASE_ACCESS_ALLOWED,
+    DATABASE_ACCESS_DELETED,
+    DATABASE_ACCESS_BANNED
+} DatabaseAccessResult;
+
+DatabaseAccessResult database_check_access(PGconn* connection, int64_t player_id);
+
 // Close with PQfinish
 PGconn* database_connect(void);
 

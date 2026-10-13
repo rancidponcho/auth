@@ -1,6 +1,7 @@
 #include "database.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <errno.h>
 #include <inttypes.h>
 
@@ -77,7 +78,10 @@ DatabaseLookupResult database_find_player(
 
 PGconn* database_connect(void)
 {
-    PGconn* connection = PQconnectdb("connect_timeout=5");
+    PGconn* connection = PQconnectdb(
+        "connect_timeout=5 "
+        "options='-c statement_timeout=3s -c lock_timeout=1s'");
+
     if (!connection) {
         fprintf(stderr, "Could not allocate database connection\n");
         return NULL;
@@ -208,3 +212,68 @@ cleanup:
     return outcome;
 }
 
+DatabaseAccessResult database_check_access(PGconn* connection, int64_t player_id)
+{
+    if (!connection || !player_id) {
+        fprintf(stderr, "Invalid account access check arguments");
+        return DATABASE_ACCESS_ERROR;
+    }
+
+    char player_id_text[21];
+    snprintf(player_id_text, sizeof(player_id_text), "%" PRId64, player_id);
+
+    const char* parameters[] = {player_id_text};
+
+    const char* query =
+        "SELECT deleted_at IS NOT NULL AS deleted, "
+        "EXISTS ("
+            "SELECT 1 FROM auth.bans "
+            "WHERE player_id = $1 "
+            "AND revoked_at IS NULL "
+            "AND banned_at <= CURRENT_TIMESTAMP "
+            "AND (banned_until IS NULL OR banned_until > CURRENT_TIMESTAMP)"
+        ") AS banned "
+        "FROM auth.accounts "
+        "WHERE player_id = $1;";
+
+    PGresult* result = PQexecParams(connection, query, 1, NULL, parameters, NULL, NULL, 0);
+
+    // Check query success
+    if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Account access query failed: %s", PQerrorMessage(connection));
+        PQclear(result);
+        return DATABASE_ACCESS_ERROR;
+    }
+
+    if (PQntuples(result) != 1 || PQnfields(result) != 2 || PQgetisnull(result, 0, 0) || PQgetisnull(result, 0, 1)) {
+        fprintf(stderr, "Account access query returned an unexpected result\n");
+        PQclear(result);
+        return DATABASE_ACCESS_ERROR;
+    }
+
+    // verify flags
+    const char* deleted_text = PQgetvalue(result, 0, 0);
+    const char* banned_text = PQgetvalue(result, 0, 1);
+
+    if ((strcmp(deleted_text, "t") != 0 &&
+         strcmp(deleted_text, "f") != 0) ||
+        (strcmp(banned_text, "t") != 0 &&
+         strcmp(banned_text, "f") != 0)) {
+        fprintf(stderr, "Account access query returned invalid flags\n");
+        PQclear(result);
+        return DATABASE_ACCESS_ERROR;
+    }
+
+    DatabaseAccessResult access_result;
+
+    if (strcmp(deleted_text, "t") == 0) {
+        access_result = DATABASE_ACCESS_DELETED;
+    } else if (strcmp(banned_text, "t") == 0) {
+        access_result = DATABASE_ACCESS_BANNED;
+    } else {
+        access_result = DATABASE_ACCESS_ALLOWED;
+    }
+
+    PQclear(result);
+    return access_result;
+}

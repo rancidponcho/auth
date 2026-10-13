@@ -321,7 +321,23 @@ static int steam_login_handler(struct mg_connection *client_connection, void *us
         }
     }
 
+    DatabaseAccessResult access_result = database_check_access(database_connection, player_id);
     PQfinish(database_connection);
+
+    if (access_result == DATABASE_ACCESS_DELETED) {
+        mg_send_http_error(client_connection, 403, "Account is deleted");
+        return 403;
+    }
+
+    if (access_result == DATABASE_ACCESS_BANNED) {
+        mg_send_http_error(client_connection, 403, "Account is banned");
+        return 403;
+    }
+
+    if (access_result != DATABASE_ACCESS_ALLOWED) {
+        mg_send_http_error(client_connection, 503, "Account access check failed");
+        return 503;
+    }
 
     printf("Resolved player ID: %" PRId64 "\n", player_id);
 
