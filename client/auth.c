@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <time.h>
 
 #include <curl/curl.h>
 #include <jansson.h>
@@ -13,6 +15,8 @@ typedef struct {
     size_t body_size;
 } LoginResponse;
 
+static char session_token_hex[65];
+static int64_t session_expires_at_unix = 0;
 static LoginResponse login_response;
 static AuthStatus login_status = AUTH_IDLE;
 static CURLM *http_manager = NULL;
@@ -20,6 +24,7 @@ static CURL* login_request = NULL;
 static struct curl_slist* upload_headers = NULL;
 static bool upload_attempted = false;
 
+// Callback for back for http request. Captures raw response data from server
 static size_t receive_login_response(char* data, size_t item_size, size_t item_count, void* user_data)
 {
     LoginResponse* response = user_data;
@@ -35,6 +40,50 @@ static size_t receive_login_response(char* data, size_t item_size, size_t item_c
 
     return received_bytes;
 }
+
+// reads data from http request response. Basically just parses token (in hex) and
+// session expiry, so client knows when to request a session refresh.
+static bool parse_login_response(void)
+{
+    json_t* root = json_loadb(login_response.body, login_response.body_size,
+                              JSON_REJECT_DUPLICATES, NULL);
+
+    if (!root) {
+        return false;
+    }
+
+    // Get each field
+    json_t* token_value = json_object_get(root, "session_token");
+    json_t* expiry_value = json_object_get(root, "expires_at");
+
+    // require 64 char token and int expiry
+    if (!json_is_string(token_value) || 
+        json_string_length(token_value) != sizeof(session_token_hex) - 1 ||
+        !json_is_integer(expiry_value)) {
+        json_decref(root);
+        return false;
+    }
+
+
+    const char* token_text = json_string_value(token_value);
+    int64_t expires_at = (int64_t)json_integer_value(expiry_value);
+    time_t now = time(NULL);
+
+    // require lowercase hex and FUTURE expiry
+    if (strspn(token_text, "0123456789abcdef") != sizeof(session_token_hex) - 1 ||
+        now == (time_t)-1 ||
+        expires_at <= (int64_t)now) {
+        json_decref(root);
+        return false;
+    }
+
+    memcpy(session_token_hex, token_text, sizeof(session_token_hex));
+    session_expires_at_unix = expires_at;
+
+    json_decref(root);
+    return true;
+}
+
 
 // Removes the active libcurl request, even if it is still pending.
 static void login_request_cleanup(void)
@@ -217,9 +266,12 @@ void auth_update(void)
         } else if (http_status != 200) {
             login_status = AUTH_FAILED;
             fprintf(stderr, "Ticket upload returned HTTP %ld\n", http_status);
-        } else {
+        } else if (!parse_login_response()) {
             login_status = AUTH_FAILED;
-            puts("Ticket uploaded, but login verification is not implemented");
+            puts("Invalid login response");
+        } else {
+            login_status = AUTH_READY;
+            puts("Login complete");
         }
 
         // Cleanup invalidates the notice and clears the active request.
