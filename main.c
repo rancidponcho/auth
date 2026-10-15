@@ -9,12 +9,30 @@
 #include <jansson.h>
 
 #include "database.h"
+#include "session.h"
 
 typedef struct {
     char body[8192];
     size_t body_size;
 } SteamResponse;
 
+static bool bytes_to_hex(const unsigned char* bytes, size_t byte_count, char* hex, size_t hex_capacity) {
+    static const char hex_digits[] = "0123456789abcdef";
+    
+    if (!bytes || !hex || hex_capacity == 0 || byte_count > (hex_capacity - 1) / 2) {
+        return false;
+    }
+
+    for (size_t i = 0; i < byte_count; ++i) {
+        hex[i * 2] = hex_digits[bytes[i] >> 4];
+        hex[i * 2 + 1] = hex_digits[bytes[i] & 0x0f];
+    }
+
+    hex[byte_count * 2] = '\0';
+    return true;
+}
+
+// Copies the steam response to our GET request. Rename? copy_steam_response?
 static size_t receive_steam_response(char* data, size_t item_size, size_t item_count, void* user_data)
 {
     SteamResponse* response = user_data;
@@ -33,6 +51,7 @@ static size_t receive_steam_response(char* data, size_t item_size, size_t item_c
     return received_bytes;
 }
 
+// Verifies service connection to steam 
 static bool request_steam_verification(const char* ticket_hex, SteamResponse* response)
 {
     const char* api_key = getenv("STEAM_WEB_API_KEY");
@@ -114,7 +133,7 @@ static bool request_steam_verification(const char* ticket_hex, SteamResponse* re
 }
 
 
-// Checks HTTP availability, not Steam or database health.
+// Checks server HTTP availability
 static int health_handler(struct mg_connection *client_connection, void *user_data)
 {
     (void)user_data;
@@ -147,6 +166,21 @@ static int health_handler(struct mg_connection *client_connection, void *user_da
     return 200;
 }
 
+/*
+ *
+ * So this is a longish one
+ *
+ * Basically, steam sends the client a token. When the client 
+ * tries to login to the auth server with said token, it needs to be
+ * verified that Steam actually sent out THAT token to THAT user. This
+ * function facilitates that verification through a POST request, then 
+ * it needs to call the session functions to actually start that 
+ * player's session.
+ *
+ * The whole thing interacts with a database.h to query the PostgreSQL 
+ * database whether the player exists. If not, it creates a new 
+ * player_id for them, along with other metadata. 
+ */
 static int steam_login_handler(struct mg_connection *client_connection, void *user_data)
 {
     (void)user_data;
@@ -200,13 +234,8 @@ static int steam_login_handler(struct mg_connection *client_connection, void *us
     }
 
     // Steam wants tickets in hex for some reason
-    static const char hex_digits[] = "0123456789abcdef";
     char ticket_hex[sizeof(ticket_data) * 2 + 1];
-    for (size_t i = 0; i < received_bytes; ++i) {
-        ticket_hex[i * 2] = hex_digits[ticket_data[i] >> 4];
-        ticket_hex[i * 2 + 1] = hex_digits[ticket_data[i] & 0x0f];
-    }
-    ticket_hex[received_bytes * 2] = '\0';
+    bytes_to_hex(ticket_data, received_bytes, ticket_hex, sizeof(ticket_hex));
 
     printf("Steam ticket body received (%zu bytes, %zu hex characters)\n", received_bytes, strlen(ticket_hex));
 
@@ -320,33 +349,67 @@ static int steam_login_handler(struct mg_connection *client_connection, void *us
             printf("Created player ID: %" PRId64 "\n", player_id);
         }
     }
+    
+    // Generate session token and hash
+    unsigned char session_token[SESSION_TOKEN_SIZE];
+    unsigned char token_hash[SESSION_HASH_SIZE];
 
-    DatabaseAccessResult access_result = database_check_access(database_connection, player_id);
+    if (!session_generate_token(session_token, token_hash)) {
+        PQfinish(database_connection);
+        mg_send_http_error(client_connection, 503, "Could not generate session token");
+        return 503;
+    }
+
+    // Create new session
+    const int lifetime_seconds = 60 * 60;
+    int64_t expires_at_unix = 0;
+    DatabaseSessionResult session_result = database_create_session(
+        database_connection, 
+        player_id,
+        token_hash,
+        lifetime_seconds,
+        &expires_at_unix);
     PQfinish(database_connection);
 
-    if (access_result == DATABASE_ACCESS_DELETED) {
+    if (session_result == DATABASE_SESSION_DELETED) {
         mg_send_http_error(client_connection, 403, "Account is deleted");
         return 403;
     }
 
-    if (access_result == DATABASE_ACCESS_BANNED) {
+    if (session_result == DATABASE_SESSION_BANNED) {
         mg_send_http_error(client_connection, 403, "Account is banned");
         return 403;
     }
 
-    if (access_result != DATABASE_ACCESS_ALLOWED) {
-        mg_send_http_error(client_connection, 503, "Account access check failed");
+    if (session_result != DATABASE_SESSION_CREATED) {
+        mg_send_http_error(client_connection, 503, "Could not create session");
         return 503;
     }
 
     printf("Resolved player ID: %" PRId64 "\n", player_id);
 
-    // Session creation is not implemented
+    // Send response to client
+    char session_token_hex[sizeof(session_token) * 2 + 1];
+    bytes_to_hex(session_token, sizeof(session_token), session_token_hex, sizeof(session_token_hex));
+
+    char response_body[256];
+
+    snprintf(response_body, sizeof(response_body), 
+            "{\"session_token\":\"%s\",\"expires_at\":%" PRId64 "}", 
+            session_token_hex, expires_at_unix);
+
+    // Send client session_token and expires_at
     mg_printf(client_connection,
-        "HTTP/1.1 501 Not Implemented\r\n"
-        "Content-Length: 0\r\n"
-        "Connection: close\r\n\r\n");
-    return 501;
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Cache-Control: no-store\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n"
+        "%s",
+        strlen(response_body),
+        response_body);
+
+    return 200;
 }
 
 int main(void)

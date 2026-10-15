@@ -3,22 +3,37 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <curl/curl.h>
+#include <jansson.h>
 
+typedef struct {
+    char body[4096];
+    size_t body_size;
+} LoginResponse;
+
+static LoginResponse login_response;
 static AuthStatus login_status = AUTH_IDLE;
-
 static CURLM *http_manager = NULL;
 static CURL* login_request = NULL;
 static struct curl_slist* upload_headers = NULL;
 static bool upload_attempted = false;
 
-// Discard response bytes, report the entire chunk as consumed.
-static size_t discard_response_body(char* data, size_t item_size, size_t item_count, void* user_data)
+static size_t receive_login_response(char* data, size_t item_size, size_t item_count, void* user_data)
 {
-    (void)data;
-    (void)user_data;
-    return item_size * item_count;
+    LoginResponse* response = user_data;
+    size_t received_bytes = item_size * item_count;
+    size_t available_bytes = sizeof(response->body) - response->body_size - 1;
+    if (received_bytes > available_bytes) {
+        return 0;
+    }
+
+    memcpy(response->body + response->body_size, data, received_bytes);
+    response->body_size += received_bytes;
+    response->body[response->body_size] = '\0';
+
+    return received_bytes;
 }
 
 // Removes the active libcurl request, even if it is still pending.
@@ -63,6 +78,10 @@ static bool start_ticket_upload(void)
         return false;
     }
 
+    // Prevent another login from appending previous response
+    login_response.body_size = 0;
+    login_response.body[0] = '\0';
+
     // Set the URL, timeout, and response callback, then queue the request.
     if (curl_easy_setopt(request, CURLOPT_URL, login_url) != CURLE_OK ||    
         curl_easy_setopt(request, CURLOPT_TIMEOUT, 10L) != CURLE_OK ||
@@ -70,7 +89,8 @@ static bool start_ticket_upload(void)
         curl_easy_setopt(request, CURLOPT_PROTOCOLS_STR, "https") != CURLE_OK ||    // require httpS
         curl_easy_setopt(request, CURLOPT_POSTFIELDSIZE, (long)ticket_size) != CURLE_OK ||
         curl_easy_setopt(request, CURLOPT_POSTFIELDS, (const char*)ticket_bytes) != CURLE_OK || // Selects POST
-        curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, discard_response_body) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, receive_login_response) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_WRITEDATA, (void*)&login_response) != CURLE_OK ||
         curl_multi_add_handle(http_manager, request) != CURLM_OK) {
         curl_easy_cleanup(request);
         curl_slist_free_all(headers);

@@ -33,15 +33,17 @@ if(AUTH_BUILD_SERVER)
     unset(CMAKE_POLICY_VERSION_MINIMUM)
     
     find_package(CURL REQUIRED COMPONENTS HTTPS AsynchDNS)
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
     find_package(PkgConfig REQUIRED)
     find_package(PostgreSQL REQUIRED)
 
     pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
 
-    add_executable(auth main.c database.c)
+    add_executable(auth main.c database.c session.c)
     target_link_libraries(auth PRIVATE
         civetweb-c-library 
         CURL::libcurl
+        OpenSSL::Crypto
         PkgConfig::JANSSON
         PostgreSQL::PostgreSQL
     )

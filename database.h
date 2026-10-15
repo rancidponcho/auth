@@ -42,6 +42,22 @@ typedef enum DatabaseAccessResult {
 
 DatabaseAccessResult database_check_access(PGconn* connection, int64_t player_id);
 
+typedef enum DatabaseSessionResult {
+    DATABASE_SESSION_ERROR,
+    DATABASE_SESSION_DELETED,
+    DATABASE_SESSION_BANNED,
+    DATABASE_SESSION_CREATED
+} DatabaseSessionResult;
+
+// token_hash contains SESSION_HASH_SIZE bytes.
+// Expiry output is set only after successful commit
+DatabaseSessionResult database_create_session(
+    PGconn* connection,
+    int64_t player_id,
+    const unsigned char* token_hash,
+    int lifetime_seconds,
+    int64_t* out_expires_at_unix);
+
 // Close with PQfinish
 PGconn* database_connect(void);
 

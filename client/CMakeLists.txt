@@ -10,6 +10,10 @@ target_link_libraries(auth_client PRIVATE Steamworks::SteamAPI)
 find_package(CURL REQUIRED COMPONENTS HTTPS AsynchDNS)
 target_link_libraries(auth_client PRIVATE CURL::libcurl)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(JANSSON REQUIRED IMPORTED_TARGET jansson)
+target_link_libraries(auth_client PRIVATE PkgConfig::JANSSON)
+
 if(MSVC)
     target_compile_options(auth_client PRIVATE /W4)
 else()

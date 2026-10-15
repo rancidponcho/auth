@@ -27,8 +27,18 @@ CREATE TABLE auth.bans (
     CHECK (revoked_at IS NULL OR revoked_at >= banned_at)
 );
 
-CREATE INDEX identities_player_id_idx
-    ON auth.identities(player_id);
+CREATE TABLE auth.sessions (
+    token_hash bytea PRIMARY KEY,
+    player_id bigint NOT NULL REFERENCES auth.accounts(player_id),
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at timestamptz NOT NULL,
+    revoked_at timestamptz,
 
-CREATE INDEX bans_player_id_idx
-    ON auth.bans(player_id);
+    CHECK (octet_length(token_hash) = 32),
+    CHECK (expires_at > created_at),
+    CHECK (revoked_at IS NULL OR revoked_at >= created_at)
+);
+
+CREATE INDEX identities_player_id_idx ON auth.identities(player_id);
+CREATE INDEX bans_player_id_idx ON auth.bans(player_id);
+CREATE INDEX sessions_player_id_idx ON auth.sessions(player_id);
