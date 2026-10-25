@@ -24,14 +24,15 @@ if(AUTH_BUILD_SERVER)
     set(CIVETWEB_ENABLE_ASAN OFF CACHE BOOL "" FORCE)
     set(CIVETWEB_SERVE_NO_FILES ON CACHE BOOL "" FORCE)
 
-    FetchContent_Declare(civetweb GIT_REPOSITORY https://github.com/civetweb/civetweb.git
-                                  GIT_TAG d7ba35bbb649209c66e582d5a0244ba988a15159 # v1.16
+    FetchContent_Declare(civetweb
+        GIT_REPOSITORY https://github.com/civetweb/civetweb.git
+        GIT_TAG d7ba35bbb649209c66e582d5a0244ba988a15159 # v1.16
     )
 
     set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
     FetchContent_MakeAvailable(civetweb)
     unset(CMAKE_POLICY_VERSION_MINIMUM)
-    
+
     find_package(CURL REQUIRED COMPONENTS HTTPS AsynchDNS)
     find_package(OpenSSL REQUIRED COMPONENTS Crypto)
     find_package(PkgConfig REQUIRED)
@@ -41,7 +42,7 @@ if(AUTH_BUILD_SERVER)
 
     add_executable(auth main.c database.c session.c)
     target_link_libraries(auth PRIVATE
-        civetweb-c-library 
+        civetweb-c-library
         CURL::libcurl
         OpenSSL::Crypto
         PkgConfig::JANSSON
@@ -49,7 +50,9 @@ if(AUTH_BUILD_SERVER)
     )
 
     set_target_properties(auth PROPERTIES
-        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
+        C_STANDARD 11
+        C_STANDARD_REQUIRED YES
+        C_EXTENSIONS NO
     )
     if(MSVC)
         target_compile_options(auth PRIVATE /W4)

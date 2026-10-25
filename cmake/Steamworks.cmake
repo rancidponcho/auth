@@ -3,9 +3,13 @@ include_guard(GLOBAL)
 set(STEAM_APP_ID "480" CACHE STRING "Steam AppID")
 option(STEAM_DEVELOPMENT "Write steam_appid.txt for local runs" OFF)
 
-set(STEAMWORKS_SDK_ROOT "" CACHE PATH "Steamworks SDK folder containing public/steam")
+set(STEAMWORKS_SDK_ROOT "" CACHE PATH
+    "Steamworks SDK folder containing public/steam"
+)
 if(NOT EXISTS "${STEAMWORKS_SDK_ROOT}/public/steam/steam_api.h")
-    message(FATAL_ERROR "Set STEAMWORKS_SDK_ROOT to your Steamworks sdk folder.")
+    message(FATAL_ERROR
+        "Set STEAMWORKS_SDK_ROOT to your Steamworks sdk folder."
+    )
 endif()
 
 set(steam_bin "${STEAMWORKS_SDK_ROOT}/redistributable_bin")
@@ -17,7 +21,9 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     if(NOT steam_arch MATCHES "^(x86_64|amd64|x64|x86|i[3-6]86)$")
-        message(FATAL_ERROR "Steamworks SDK 1.65 has no Windows library for ${steam_arch}.")
+        message(FATAL_ERROR
+            "Steamworks SDK 1.65 has no Windows library for ${steam_arch}."
+        )
     endif()
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         set(steam_library "${steam_bin}/win64/steam_api64.dll")
@@ -33,15 +39,20 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         else()
             set(steam_library "${steam_bin}/linux32/libsteam_api.so")
         endif()
-    elseif(steam_arch MATCHES "^(aarch64|arm64)$" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    elseif(steam_arch MATCHES "^(aarch64|arm64)$"
+        AND CMAKE_SIZEOF_VOID_P EQUAL 8)
         set(steam_library "${steam_bin}/linuxarm64/libsteam_api.so")
     else()
-        message(FATAL_ERROR "Steamworks SDK 1.65 has no Linux library for ${steam_arch}.")
+        message(FATAL_ERROR
+            "Steamworks SDK 1.65 has no Linux library for ${steam_arch}."
+        )
     endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(steam_library "${steam_bin}/osx/libsteam_api.dylib")
 else()
-    message(FATAL_ERROR "Steamworks is not configured for ${CMAKE_SYSTEM_NAME}.")
+    message(FATAL_ERROR
+        "Steamworks is not configured for ${CMAKE_SYSTEM_NAME}."
+    )
 endif()
 
 set(steam_files "${steam_library}")
@@ -95,6 +106,7 @@ function(auth_stage_runtime target)
     get_target_property(target_is_bundle ${target} MACOSX_BUNDLE)
     if(NOT target_is_bundle)
         install(FILES "$<TARGET_FILE:Steamworks::SteamAPI>"
-            DESTINATION bin COMPONENT client)
+            DESTINATION bin COMPONENT client
+        )
     endif()
 endfunction()

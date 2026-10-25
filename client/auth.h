@@ -1,6 +1,6 @@
 /*
- * auth_status() tracks login attempt
- * AUTH_READY is reserved for a confirmed login from server
+ * auth_status() returns AUTH_READY while the saved session is unexpired, even
+ * if another login is pending or its renewal failed.
  */
 
 #ifndef AUTH_CLIENT_H
@@ -29,4 +29,4 @@ void auth_shutdown(void);
 }
 #endif
 
-#endif // AUTH_CLIENT_H
+#endif

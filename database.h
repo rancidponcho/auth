@@ -16,8 +16,8 @@ typedef enum DatabaseLookupResult {
 } DatabaseLookupResult;
 
 DatabaseLookupResult database_find_player(
-    PGconn* connection, 
-    const char* provider, 
+    PGconn* connection,
+    const char* provider,
     const char* provider_user_id,
     int64_t* out_player_id);
 
@@ -40,7 +40,9 @@ typedef enum DatabaseAccessResult {
     DATABASE_ACCESS_BANNED
 } DatabaseAccessResult;
 
-DatabaseAccessResult database_check_access(PGconn* connection, int64_t player_id);
+DatabaseAccessResult database_check_access(
+    PGconn* connection,
+    int64_t player_id);
 
 typedef enum DatabaseSessionResult {
     DATABASE_SESSION_ERROR,
@@ -60,5 +62,18 @@ DatabaseSessionResult database_create_session(
 
 // Close with PQfinish
 PGconn* database_connect(void);
+
+typedef enum DatabaseValidationResult {
+    DATABASE_VALIDATION_ERROR,
+    DATABASE_VALIDATION_REJECTED,
+    DATABASE_VALIDATION_VALID
+} DatabaseValidationResult;
+
+// Call outside a transaction. Outputs are written only on VALID
+DatabaseValidationResult database_validate_session(
+    PGconn* connection,
+    const unsigned char* token_hash,
+    int64_t* out_player_id,
+    int64_t* out_expires_at_unix);
 
 #endif

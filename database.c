@@ -1,5 +1,6 @@
 #include "database.h"
 
+#include <libpq-fe.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -24,7 +25,7 @@ DatabaseLookupResult database_find_player(
         fprintf(stderr, "Invalid database lookup arguments\n");
         return DATABASE_LOOKUP_ERROR;
     }
-    
+
     // Ask database for the matching player ID
     const char* query =
         "SELECT player_id FROM auth.identities "
@@ -33,8 +34,9 @@ DatabaseLookupResult database_find_player(
     const char* parameters[] = {provider, provider_user_id};
 
     // points to object containing query status
-    PGresult* result = PQexecParams(connection, query, 2, NULL, parameters, NULL, NULL, 0);
-    
+    PGresult* result =
+        PQexecParams(connection, query, 2, NULL, parameters, NULL, NULL, 0);
+
     // check for fail or no match
     if (!result) {
         fprintf(stderr, "Player lookup failed: %s", PQerrorMessage(connection));
@@ -43,24 +45,29 @@ DatabaseLookupResult database_find_player(
     }
 
     if (PQresultStatus(result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Player lookup failed: %s", PQresultErrorMessage(result));
+        fprintf(
+            stderr,
+            "Player lookup failed: %s",
+            PQresultErrorMessage(result));
         PQclear(result);
         return DATABASE_LOOKUP_ERROR;
     }
 
     int row_count = PQntuples(result);
-    
+
     if (row_count == 0) {
         PQclear(result);
         return DATABASE_LOOKUP_NOT_FOUND;
     }
 
-    if (row_count != 1 || PQnfields(result) != 1 || PQgetisnull(result, 0, 0)) {
+    if (row_count != 1 ||
+        PQnfields(result) != 1 ||
+        PQgetisnull(result, 0, 0)) {
         fprintf(stderr, "Player lookup returned an unexpected result\n");
         PQclear(result);
         return DATABASE_LOOKUP_ERROR;
     }
-    
+
     // get associated internal player id
     const char* player_id_text = PQgetvalue(result, 0, 0);
     char* end = NULL;
@@ -96,7 +103,10 @@ PGconn* database_connect(void)
     }
 
     if (PQstatus(connection) != CONNECTION_OK) {
-        fprintf(stderr, "Database connection failed: %s", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Database connection failed: %s",
+            PQerrorMessage(connection));
         PQfinish(connection);
         return NULL;
     }
@@ -117,12 +127,17 @@ DatabaseCreateResult database_create_player(
     const char* provider_user_id,
     int64_t* out_player_id)
 {
-    if (!connection || !provider || !provider_user_id || !out_player_id || !provider[0] || !provider_user_id[0]) {
+    if (!connection ||
+        !provider ||
+        !provider_user_id ||
+        !out_player_id ||
+        !provider[0] ||
+        !provider_user_id[0]) {
         fprintf(stderr, "Invalid account creation arguments\n");
         return DATABASE_CREATE_ERROR;
     }
 
-    // starts transaction 
+    // starts transaction
     if (PQtransactionStatus(connection) != PQTRANS_IDLE) {
         fprintf(stderr, "Account creation requires an idle connection\n");
         return DATABASE_CREATE_ERROR;
@@ -133,23 +148,33 @@ DatabaseCreateResult database_create_player(
     PGresult* result = PQexec(connection, "BEGIN");
 
     if (!result || PQresultStatus(result) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Could not begin transaction: %s\n", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Could not begin transaction: %s\n",
+            PQerrorMessage(connection));
         goto cleanup;
     }
 
     PQclear(result);
     result = NULL;
 
-    account_result = PQexec(connection,
+    account_result = PQexec(
+        connection,
         "INSERT INTO auth.accounts DEFAULT VALUES "
         "RETURNING player_id;");
 
-    if (!account_result || PQresultStatus(account_result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Account insert failed: %s\n", PQerrorMessage(connection));
+    if (!account_result ||
+        PQresultStatus(account_result) != PGRES_TUPLES_OK) {
+        fprintf(
+            stderr,
+            "Account insert failed: %s\n",
+            PQerrorMessage(connection));
         goto rollback;
     }
 
-    if (PQntuples(account_result) != 1 || PQnfields(account_result) != 1 || PQgetisnull(account_result, 0, 0)) {
+    if (PQntuples(account_result) != 1 ||
+        PQnfields(account_result) != 1 ||
+        PQgetisnull(account_result, 0, 0)) {
         fprintf(stderr, "Account insert returned an unexpected result\n");
         goto rollback;
     }
@@ -162,7 +187,10 @@ DatabaseCreateResult database_create_player(
     intmax_t player_id = strtoimax(player_id_text, &end, 10);
 
     if (errno == ERANGE ||
-        end == player_id_text || *end != '\0' || player_id < INT64_MIN || player_id > INT64_MAX) {
+        end == player_id_text ||
+        *end != '\0' ||
+        player_id < INT64_MIN ||
+        player_id > INT64_MAX) {
         fprintf(stderr, "Account insert returned an invalid player ID\n");
         goto rollback;
     }
@@ -174,16 +202,16 @@ DatabaseCreateResult database_create_player(
         "ON CONFLICT (provider, provider_user_id) DO NOTHING "
         "RETURNING player_id;";
 
-    const char* parameters[] = {
-        player_id_text,
-        provider,
-        provider_user_id
-    };
+    const char* parameters[] = {player_id_text, provider, provider_user_id};
 
-    result = PQexecParams(connection, query, 3, NULL, parameters, NULL, NULL, 0);
+    result =
+        PQexecParams(connection, query, 3, NULL, parameters, NULL, NULL, 0);
 
     if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Identity insert failed: %s\n", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Identity insert failed: %s\n",
+            PQerrorMessage(connection));
         goto rollback;
     }
 
@@ -193,7 +221,9 @@ DatabaseCreateResult database_create_player(
         goto rollback;
     }
 
-    if (PQntuples(result) != 1 || PQnfields(result) != 1 || PQgetisnull(result, 0, 0)) {
+    if (PQntuples(result) != 1 ||
+        PQnfields(result) != 1 ||
+        PQgetisnull(result, 0, 0)) {
         fprintf(stderr, "Identity insert returned an unexpected result\n");
         goto rollback;
     }
@@ -203,7 +233,10 @@ DatabaseCreateResult database_create_player(
     result = PQexec(connection, "COMMIT");
 
     if (!result || PQresultStatus(result) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Could not commit account creation: %s\n", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Could not commit account creation: %s\n",
+            PQerrorMessage(connection));
         goto rollback;
     }
 
@@ -217,7 +250,10 @@ rollback:
     result = PQexec(connection, "ROLLBACK");
 
     if (!result || PQresultStatus(result) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Could not roll back account creation: %s\n", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Could not roll back account creation: %s\n",
+            PQerrorMessage(connection));
         outcome = DATABASE_CREATE_ERROR;
     }
 
@@ -228,7 +264,9 @@ cleanup:
 }
 
 // Check bans/deletions using internal player_id
-DatabaseAccessResult database_check_access(PGconn* connection, int64_t player_id)
+DatabaseAccessResult database_check_access(
+    PGconn* connection,
+    int64_t player_id)
 {
     if (!connection || !player_id) {
         fprintf(stderr, "Invalid account access check arguments");
@@ -252,16 +290,21 @@ DatabaseAccessResult database_check_access(PGconn* connection, int64_t player_id
         "FROM auth.accounts "
         "WHERE player_id = $1;";
 
-    PGresult* result = PQexecParams(connection, query, 1, NULL, parameters, NULL, NULL, 0);
+    PGresult* result =
+        PQexecParams(connection, query, 1, NULL, parameters, NULL, NULL, 0);
 
     // Check query success
     if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Account access query failed: %s", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Account access query failed: %s",
+            PQerrorMessage(connection));
         PQclear(result);
         return DATABASE_ACCESS_ERROR;
     }
 
-    if (PQntuples(result) != 1 || PQnfields(result) != 2 || PQgetisnull(result, 0, 0) || PQgetisnull(result, 0, 1)) {
+    if (PQntuples(result) != 1 || PQnfields(result) != 2 ||
+        PQgetisnull(result, 0, 0) || PQgetisnull(result, 0, 1)) {
         fprintf(stderr, "Account access query returned an unexpected result\n");
         PQclear(result);
         return DATABASE_ACCESS_ERROR;
@@ -302,7 +345,11 @@ DatabaseSessionResult database_create_session(
     int lifetime_seconds,
     int64_t* out_expires_at_unix)
 {
-    if (!connection || player_id <= 0 || !token_hash || lifetime_seconds <= 0 || !out_expires_at_unix) {
+    if (!connection ||
+        player_id <= 0 ||
+        !token_hash ||
+        lifetime_seconds <= 0 ||
+        !out_expires_at_unix) {
         fprintf(stderr, "Invalid session creation arguments\n");
         return DATABASE_SESSION_ERROR;
     }
@@ -319,29 +366,45 @@ DatabaseSessionResult database_create_session(
     snprintf(lifetime_text, sizeof(lifetime_text), "%d", lifetime_seconds);
 
     DatabaseSessionResult outcome = DATABASE_SESSION_ERROR;
+
     // Disallow this transaction from reading uncommitted entries
-    PGresult* result = PQexec(connection, "BEGIN ISOLATION LEVEL READ COMMITTED");
+    PGresult* result =
+        PQexec(connection, "BEGIN ISOLATION LEVEL READ COMMITTED");
+
     if (!result || PQresultStatus(result) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Could not begin session transaction: %s", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Could not begin session transaction: %s",
+            PQerrorMessage(connection));
         goto rollback;
     }
+
     PQclear(result);
 
     const char* account_parameters[] = {player_id_text};
-
     // find player row by ID
     result = PQexecParams(
         connection,
         "SELECT player_id FROM auth.accounts "
         "WHERE player_id = $1::bigint FOR UPDATE;", // FOR UPDATE -> lock row until commit
-        1, NULL, account_parameters, NULL, NULL, 0);
+        1,
+        NULL,
+        account_parameters,
+        NULL,
+        NULL,
+        0);
 
     if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Could not lock account: %s", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Could not lock account: %s",
+            PQerrorMessage(connection));
         goto rollback;
     }
 
-    if (PQntuples(result) != 1 || PQnfields(result) != 1 || PQgetisnull(result, 0, 0)) {
+    if (PQntuples(result) != 1 ||
+        PQnfields(result) != 1 ||
+        PQgetisnull(result, 0, 0)) {
         fprintf(stderr, "Account lock query returned an unexpected result\n");
         goto rollback;
     }
@@ -350,7 +413,8 @@ DatabaseSessionResult database_create_session(
     result = NULL;
 
     // Check if ban/deleted account
-    DatabaseAccessResult access_result = database_check_access(connection, player_id);
+    DatabaseAccessResult access_result =
+        database_check_access(connection, player_id);
 
     if (access_result != DATABASE_ACCESS_ALLOWED) {
         if (access_result == DATABASE_ACCESS_DELETED) {
@@ -362,7 +426,7 @@ DatabaseSessionResult database_create_session(
         goto rollback;
     }
 
-    // this is how we'll make a new session entry for the player
+    // this is how new session entries for the player are made
     const char* query =
         "INSERT INTO auth.sessions "
         "(player_id, token_hash, created_at, expires_at) "
@@ -379,14 +443,27 @@ DatabaseSessionResult database_create_session(
 
     const int parameter_lengths[] = {0, SESSION_HASH_SIZE, 0};
     const int parameter_formats[] = {0, 1, 0};
-    result = PQexecParams(connection, query, 3, NULL, parameters, parameter_lengths, parameter_formats, 0);
+    result = PQexecParams(
+        connection,
+        query,
+        3,
+        NULL,
+        parameters,
+        parameter_lengths,
+        parameter_formats,
+        0);
 
     if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Session insert failed: %s", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Session insert failed: %s",
+            PQerrorMessage(connection));
         goto rollback;
     }
 
-    if (PQntuples(result) != 1 || PQnfields(result) != 1 || PQgetisnull(result, 0, 0)) {
+    if (PQntuples(result) != 1 ||
+        PQnfields(result) != 1 ||
+        PQgetisnull(result, 0, 0)) {
         fprintf(stderr, "Session insert returned an unexpected result\n");
         goto rollback;
     }
@@ -398,7 +475,11 @@ DatabaseSessionResult database_create_session(
     errno = 0;
     intmax_t expiry_unix = strtoimax(expiry_text, &end, 10);
 
-    if (errno == ERANGE || end == expiry_text || *end != '\0' || expiry_unix <= 0 || expiry_unix > INT64_MAX) {
+    if (errno == ERANGE ||
+        end == expiry_text ||
+        *end != '\0' ||
+        expiry_unix <= 0 ||
+        expiry_unix > INT64_MAX) {
         fprintf(stderr, "Session insert returned an invalid expiry\n");
         goto rollback;
     }
@@ -406,8 +487,13 @@ DatabaseSessionResult database_create_session(
     PQclear(result);
     result = PQexec(connection, "COMMIT");
 
-    if (!result || PQresultStatus(result) != PGRES_COMMAND_OK || strcmp(PQcmdStatus(result), "COMMIT") != 0) {
-        fprintf(stderr, "Could not commit session creation: %s", PQerrorMessage(connection));
+    if (!result ||
+        PQresultStatus(result) != PGRES_COMMAND_OK ||
+        strcmp(PQcmdStatus(result), "COMMIT") != 0) {
+        fprintf(
+            stderr,
+            "Could not commit session creation: %s",
+            PQerrorMessage(connection));
         goto rollback;
     }
 
@@ -421,9 +507,110 @@ rollback:
     result = PQexec(connection, "ROLLBACK");
 
     if (!result || PQresultStatus(result) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Could not roll back session creation: %s", PQerrorMessage(connection));
+        fprintf(
+            stderr,
+            "Could not roll back session creation: %s",
+            PQerrorMessage(connection));
         outcome = DATABASE_SESSION_ERROR;
     }
+
+cleanup:
+    PQclear(result);
+    return outcome;
+}
+
+DatabaseValidationResult database_validate_session(
+    PGconn* connection,
+    const unsigned char* token_hash,
+    int64_t* out_player_id,
+    int64_t* out_expires_at_unix)
+{
+    if (!connection || !token_hash || !out_player_id || !out_expires_at_unix) {
+        return DATABASE_VALIDATION_ERROR;
+    }
+
+    if (PQtransactionStatus(connection) != PQTRANS_IDLE) {
+        fprintf(stderr, "Session validation requires an idle connection\n");
+        return DATABASE_VALIDATION_ERROR;
+    }
+
+    //
+    const char* query =
+        "SELECT s.player_id, "
+        "floor(extract(epoch FROM s.expires_at))::bigint "
+        "FROM auth.sessions AS s "
+        "JOIN auth.accounts AS a ON a.player_id = s.player_id "
+        "WHERE s.token_hash = $1::bytea "
+        "AND s.revoked_at IS NULL "
+        "AND s.expires_at > statement_timestamp() "
+        "AND a.deleted_at IS NULL "
+        "AND NOT EXISTS ("
+            "SELECT 1 FROM auth.bans AS b "
+            "WHERE b.player_id = s.player_id "
+            "AND b.revoked_at IS NULL "
+            "AND b.banned_at <= statement_timestamp() "
+            "AND (b.banned_until IS NULL "
+                "OR b.banned_until > statement_timestamp())"
+        ");";
+
+    const char* parameters[] = {(const char*)token_hash};
+    const int parameter_lengths[] = {SESSION_HASH_SIZE};
+    const int parameter_formats[] = {1}; // Binary hash, not a string
+
+    DatabaseValidationResult outcome = DATABASE_VALIDATION_ERROR;
+
+    PGresult* result = PQexecParams(
+        connection,
+        query,
+        1,
+        NULL,
+        parameters,
+        parameter_lengths,
+        parameter_formats,
+        0);
+
+    if (!result || PQresultStatus(result) != PGRES_TUPLES_OK) {
+        fprintf(
+            stderr,
+            "Session validation failed: %s",
+            PQerrorMessage(connection));
+        goto cleanup;
+    }
+
+    if (PQntuples(result) == 0) {
+        outcome = DATABASE_VALIDATION_REJECTED;
+        goto cleanup;
+    }
+
+    if (PQntuples(result) != 1 || PQnfields(result) != 2 ||
+        PQgetisnull(result, 0, 0) || PQgetisnull(result, 0, 1)) {
+        fprintf(stderr, "Session validation returned an unexpected result\n");
+        goto cleanup;
+    }
+
+    // read the returned numbers
+    // Column 0 = player id; column 1 = expiry
+    int64_t values[2];
+
+    for (int column = 0; column < 2; ++column) {
+        const char* value_text = PQgetvalue(result, 0, column);
+        char* end = NULL;
+
+        errno = 0;
+        intmax_t value = strtoimax(value_text, &end, 10);
+
+        if (errno == ERANGE || end == value_text ||
+            *end != '\0' || value <= 0 || value > INT64_MAX) {
+            fprintf(stderr, "Session validation returned an invalid number\n");
+            goto cleanup;
+        }
+
+        values[column] = (int64_t)value;
+    }
+
+    *out_player_id = values[0];
+    *out_expires_at_unix = values[1];
+    outcome = DATABASE_VALIDATION_VALID;
 
 cleanup:
     PQclear(result);
