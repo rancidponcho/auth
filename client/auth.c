@@ -77,15 +77,15 @@ static void schedule_login_retry(void)
 }
 
 /*
- * Callback for back for http request. Captures raw response data from server
+ * Callback for http request. Captures raw response data from server
  *
  * libcurl calls this whenever another piece of the response body arrives.
  * user_data points to the LoginResponse buffer assigned to the request.
- * Each piece is appended to that bugger, leaving room for the final '\0'.
+ * Each piece is appended to that buffer, leaving room for a null termination.
  *
- * The return value tells curl how many bytes were accpeted. A piece that
- * won't fit returns zero, causing curl to abort the request. JSON parsing
- * happens later, after the complete response arrives
+ * The return value tells curl how many bytes were accepted on this call. If
+ * incoming bytes won't fit, zero tells curl to abort. JSON parsing happens
+ * later with parse_login_response(), after the complete response arrives
  */
 static size_t receive_login_response(
     char* data,
@@ -109,7 +109,7 @@ static size_t receive_login_response(
 
 /*
  * The complete response body is parsed as JSON. Valid replies contain a
- * 64 character lowercase hex token and an ineger Unix expiry time later than
+ * 64 character lowercase hex token and an integer Unix expiry time later than
  * the client's current time.
  *
  * Valid replies replace the saved session. Renewal is scheduled halfway
@@ -130,7 +130,7 @@ static bool parse_login_response(void)
         return false;
     }
 
-    // Get each field
+    // Find each field
     json_t* token_value = json_object_get(root, "session_token");
     json_t* expiry_value = json_object_get(root, "expires_at");
 
@@ -146,8 +146,8 @@ static bool parse_login_response(void)
     int64_t expires_at = (int64_t)json_integer_value(expiry_value);
     time_t now = time(NULL);
 
-    // require lowercase hex and FUTURE expiry
-    if (strspn(token_text, "0123456789abcdef") !=
+    // ensure lowercase hex and that expiry is not in the past
+    if (strspn(token_text, "0123456789abcdef") != 
             sizeof(session_token_hex) - 1 ||
         now == (time_t)-1 ||
         expires_at <= (int64_t)now) {
@@ -155,6 +155,10 @@ static bool parse_login_response(void)
         return false;
     }
 
+    /*
+     * token_text belongs to the JSON document. The copy below keeps the token
+     * in session_token_hex after json_decref() releases that document
+     */
     memcpy(session_token_hex, token_text, sizeof(session_token_hex));
     session_expires_at_unix = expires_at;
     int64_t remaining_seconds = expires_at - (int64_t)now;
@@ -178,8 +182,138 @@ static void login_request_cleanup(void)
     upload_headers = NULL;
 }
 
+// Logout only needs the HTTP status. Discard any response body.
+static size_t discard_response_body(
+    char* data,
+    size_t item_size,
+    size_t item_count,
+    void* user_data)
+{
+    (void)data;
+    (void)user_data;
+
+    return item_size * item_count;
+}
+
 /*
- * The provider's ticket becomes the body of an HTTPS POST to AUTH_LOGIN_URL.
+ * Uses AUTH_SERVER_URL if set, otherwise the compiled default.
+ * Replaces the address's path with the requested endpoint.
+ *
+ * The CURLU object is temporary. curl_url_get() allocates a separate
+ * string, which survives curl_url_cleanup(). Caller frees that string
+ * with curl_free().
+ */
+static char* make_auth_url(const char* path)
+{
+    const char* server_url = getenv("AUTH_SERVER_URL");
+
+    if (!server_url || server_url[0] == '\0') {
+        server_url = AUTH_DEFAULT_SERVER_URL;
+    }
+
+    if (server_url[0] == '\0') {
+        return NULL;
+    }
+
+    CURLU* url = curl_url();
+    if(!url) {
+        return NULL;
+    }
+
+    char* request_url = NULL;
+    
+    if (curl_url_set(url, CURLUPART_URL, server_url, 0) != CURLUE_OK ||
+        curl_url_set(url, CURLUPART_PATH, path, 0) != CURLUE_OK ||
+        curl_url_set(url, CURLUPART_QUERY, NULL, 0) != CURLUE_OK ||
+        curl_url_set(url, CURLUPART_FRAGMENT, NULL, 0) != CURLUE_OK ||
+        curl_url_get(url, CURLUPART_URL, &request_url, 0) != CURLUE_OK) {
+        curl_free(request_url);
+        curl_url_cleanup(url);
+        return NULL;
+    }
+
+    curl_url_cleanup(url);
+    return request_url;
+}
+
+static bool send_logout_request(void)
+{
+    if (session_token_hex[0] == '\0') {
+        return true;
+    }
+
+    char* logout_url = make_auth_url("/auth/logout");
+    if (!logout_url) {
+        return false;
+    }
+
+    CURL* request = curl_easy_init();
+    if (!request) {
+        curl_free(logout_url);
+        return false;
+    }
+
+    char authorization_header[128];
+    snprintf(
+        authorization_header,
+        sizeof(authorization_header),
+        "Authorization: Bearer %s",
+        session_token_hex);
+
+    /*
+     * curl_slist_append() copies header text into the list. The request
+     * borrows that list, so it stays allocated until the request is cleaned up.
+     */
+    struct curl_slist* headers =
+        curl_slist_append(NULL, authorization_header);
+    if (!headers) {
+        curl_easy_cleanup(request);
+        curl_free(logout_url);
+        return false;
+    }
+
+    /*
+     * Session token goes in the Authorization header, so the POST body is
+     * empty. Successful logout returns HTTP 204 without a response body.
+     * Only the HTTP status matters here.
+     *
+     * This request runs during shutdown. The 2 second timeout limits how long
+     * logout can delay closing the game. Server-side session expiry still
+     * applies if the logout request never reaches the server.
+     */
+    if (curl_easy_setopt(request, CURLOPT_URL, logout_url) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_HTTPHEADER, headers) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_POSTFIELDS, "") != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_PROTOCOLS_STR, "https") != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_TIMEOUT_MS, 2000L) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_NOSIGNAL, 1L) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, discard_response_body) != CURLE_OK) {
+        curl_easy_cleanup(request);
+        curl_slist_free_all(headers);
+        curl_free(logout_url);
+        return false;
+    }
+
+    CURLcode curl_result = curl_easy_perform(request);
+    long http_status = 0;
+
+    if (curl_result == CURLE_OK) {
+        curl_result = 
+            curl_easy_getinfo(request, CURLINFO_RESPONSE_CODE, &http_status);
+    }
+
+    bool logout_succeeded =
+        curl_result == CURLE_OK && http_status == 204;
+
+    curl_easy_cleanup(request);
+    curl_slist_free_all(headers);
+    curl_free(logout_url);
+
+    return logout_succeeded;
+}
+
+/*
+ * The provider's ticket becomes the body of an HTTPS POST to AUTH_SERVER_URL.
  * This is where the request is setup and added to http_manager. auth_update()
  * then runs the connection, send, and receive ops with libcurl.
  *
@@ -191,10 +325,7 @@ static void login_request_cleanup(void)
  */
 static bool start_ticket_upload(void)
 {
-    // Development login endpoint.
-    const char* login_url = getenv("AUTH_LOGIN_URL");
-
-    if (!http_manager || login_request || !login_url || login_url[0] == '\0') {
+    if (!http_manager || login_request ) {
         return false;
     }
 
@@ -220,34 +351,35 @@ static bool start_ticket_upload(void)
         return false;
     }
 
-    // Prevent another login from appending previous response
-    login_response.body_size = 0;
-    login_response.body[0] = '\0';
-
-    // Set the URL, timeout, and response callback, then queue the request.
-    if (curl_easy_setopt(request, CURLOPT_URL, login_url) != CURLE_OK ||
-        curl_easy_setopt(request, CURLOPT_TIMEOUT, 10L) != CURLE_OK ||
-        curl_easy_setopt(request, CURLOPT_HTTPHEADER, headers) != CURLE_OK ||
-        curl_easy_setopt(request, CURLOPT_PROTOCOLS_STR, "https") != CURLE_OK || // require httpS
-        curl_easy_setopt(request, CURLOPT_POSTFIELDSIZE, (long)ticket_size) !=
-            CURLE_OK ||
-        curl_easy_setopt(
-            request,
-            CURLOPT_POSTFIELDS,
-            (const char*)ticket_bytes) != CURLE_OK || // Selects POST
-        curl_easy_setopt(
-            request,
-            CURLOPT_WRITEFUNCTION,
-            receive_login_response) != CURLE_OK ||
-        curl_easy_setopt(request, CURLOPT_WRITEDATA, (void*)&login_response) !=
-            CURLE_OK ||
-        curl_multi_add_handle(http_manager, request) != CURLM_OK) {
+    // create steam auth endpoint url
+    char* login_url = make_auth_url("/auth/steam");
+    if (!login_url) {
         curl_easy_cleanup(request);
         curl_slist_free_all(headers);
         return false;
     }
 
-    // Keep the handle for updates and cleanup.
+    // Prevent another login from appending previous response
+    login_response.body_size = 0;
+    login_response.body[0] = '\0';
+
+    // Set the URL, timeout, and response callback, then queue request.
+    if (curl_easy_setopt(request, CURLOPT_URL, login_url) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_TIMEOUT, 10L) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_HTTPHEADER, headers) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_PROTOCOLS_STR, "https") != CURLE_OK || // require httpS
+        curl_easy_setopt(request, CURLOPT_POSTFIELDSIZE, (long)ticket_size) != CURLE_OK || // binary tickets can contain zero bytes, so exact size is supplied
+        curl_easy_setopt(request, CURLOPT_POSTFIELDS, (const char*)ticket_bytes) != CURLE_OK || // Selects POST
+        curl_easy_setopt(request, CURLOPT_WRITEFUNCTION, receive_login_response) != CURLE_OK ||
+        curl_easy_setopt(request, CURLOPT_WRITEDATA, (void*)&login_response) != CURLE_OK ||
+        curl_multi_add_handle(http_manager, request) != CURLM_OK) {
+        curl_free(login_url);
+        curl_easy_cleanup(request);
+        curl_slist_free_all(headers);
+        return false;
+    }
+
+    curl_free(login_url);
     login_request = request;
     upload_headers = headers;
     return true;
@@ -539,6 +671,10 @@ void auth_shutdown(void)
 {
     // Free the request before its manager.
     login_request_cleanup();
+
+    if (!send_logout_request()) {
+        fprintf(stderr, "Could not confirm logout\n");
+    }
 
     if (http_manager) {
         curl_multi_cleanup(http_manager);

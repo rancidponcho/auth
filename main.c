@@ -61,7 +61,7 @@ static size_t receive_steam_response(
     return received_bytes;
 }
 
-// Verifies service connection to steam
+// Sends the ticket to Steam for verification and collects response
 static bool request_steam_verification(
     const char* ticket_hex,
     SteamResponse* response)
@@ -112,7 +112,7 @@ static bool request_steam_verification(
     if (curl_easy_setopt(request, CURLOPT_URL, request_url) != CURLE_OK ||
         curl_easy_setopt(request, CURLOPT_HTTPHEADER, headers) != CURLE_OK ||
         curl_easy_setopt(request, CURLOPT_PROTOCOLS_STR, "https") != CURLE_OK ||
-        curl_easy_setopt(request, CURLOPT_CONNECTTIMEOUT, 3L) != CURLE_OK || // 3 second timeout for client_connection
+        curl_easy_setopt(request, CURLOPT_CONNECTTIMEOUT, 3L) != CURLE_OK || // Allow 3 seconds to establish connection to Steam
         curl_easy_setopt(request, CURLOPT_TIMEOUT, 5L) != CURLE_OK ||
         curl_easy_setopt(request, CURLOPT_NOSIGNAL, 1L) != CURLE_OK ||
         curl_easy_setopt(
@@ -193,6 +193,55 @@ static int health_handler(
     return 200;
 }
 
+// helper sends "401 Unauthorized" to connection
+static int send_session_unauthorized(struct mg_connection* client_connection)
+{
+    mg_printf(
+        client_connection,
+        "HTTP/1.1 401 Unauthorized\r\n"
+        "WWW-Authenticate: Bearer\r\n"
+        "Cache-Control: no-store\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n\r\n");
+
+    return 401;
+}
+
+// Returns 0 with hash, or sends an error and returns HTTP status
+static int read_session_token_hash(
+        struct mg_connection* client_connection,
+        unsigned char* out_token_hash)
+{
+    const char* authorization =
+        mg_get_header(client_connection, "Authorization");
+
+    if (!authorization || mg_strncasecmp(authorization, "Bearer ", 7) != 0) {
+        return send_session_unauthorized(client_connection);
+    }
+
+    const char* token_hex = authorization + 7;
+
+    while (*token_hex == ' ') {
+        ++token_hex;
+    }
+
+    unsigned char decoded_token[SESSION_TOKEN_SIZE];
+
+    if (!session_decode_token(token_hex, decoded_token)) {
+        return send_session_unauthorized(client_connection);
+    }
+
+    if (!session_hash_token(decoded_token, out_token_hash)) {
+        mg_send_http_error(
+            client_connection,
+            500,
+            "Could not hash session token");
+        return 500;
+    }
+
+    return 0;
+}
+
 /*
  * Checks a session token the client already received at login. Token gets
  * decoded and hashed, then checked against the database. Matching the hash
@@ -227,51 +276,16 @@ static int session_validate_handler(
         // The response is already sent; return its status for CivetWeb's log.
         return 405;
     }
-
-    const char* authorization =
-        mg_get_header(client_connection, "Authorization");
-
-    if (!authorization || mg_strncasecmp(authorization, "Bearer ", 7) != 0) {
-        mg_printf(
-            client_connection,
-            "HTTP/1.1 401 Unauthorized\r\n"
-            "WWW-Authenticate: Bearer\r\n"
-            "Cache-Control: no-store\r\n"
-            "Content-Length: 0\r\n"
-            "Connection: close\r\n\r\n");
-        return 401;
-    }
-
-    const char* token_hex = authorization + 7;
-
-    while (*token_hex == ' ') {
-        ++token_hex;
-    }
-
-    unsigned char decoded_token[SESSION_TOKEN_SIZE];
+    
     unsigned char token_hash[SESSION_HASH_SIZE];
+    int token_error = read_session_token_hash(client_connection, token_hash);
+    if (token_error != 0) {
+        return token_error;
+    }
+
+    // connect to database
     int64_t player_id = 0;
     int64_t expires_at_unix = 0;
-    // convert hex back into the og token bytes
-    if (!session_decode_token(token_hex, decoded_token)) {
-        mg_printf(
-            client_connection,
-            "HTTP/1.1 401 Unauthorized\r\n"
-            "WWW-Authenticate: Bearer\r\n"
-            "Cache-Control: no-store\r\n"
-            "Content-Length: 0\r\n"
-            "Connection: close\r\n\r\n");
-        return 401;
-    }
-    // hash it
-    if (!session_hash_token(decoded_token, token_hash)) {
-        mg_send_http_error(
-            client_connection,
-            500,
-            "Could not validate session");
-        return 500;
-    }
-    // connect to database
     PGconn* database_connection = database_connect();
     if (!database_connection) {
         mg_send_http_error(client_connection, 503, "Database unavailable");
@@ -287,14 +301,7 @@ static int session_validate_handler(
     PQfinish(database_connection);
 
     if (validation_result == DATABASE_VALIDATION_REJECTED) {
-        mg_printf(
-            client_connection,
-            "HTTP/1.1 401 Unauthorized\r\n"
-            "WWW-Authenticate: Bearer\r\n"
-            "Cache-Control: no-store\r\n"
-            "Content-Length: 0\r\n"
-            "Connection: close\r\n\r\n");
-        return 401;
+        return send_session_unauthorized(client_connection);
     }
 
     if (validation_result != DATABASE_VALIDATION_VALID) {
@@ -327,6 +334,69 @@ static int session_validate_handler(
         response_body);
 
     return 200;
+}
+
+
+static int session_revoke_handler(
+    struct mg_connection* client_connection,
+    void* user_data)
+{
+    (void)user_data;
+
+    // Borrowed request info; valid for this callback.
+    const struct mg_request_info* request_info =
+        mg_get_request_info(client_connection);
+
+    // Route matching can include longer paths; handle only the exact path.
+    if (strcmp(request_info->local_uri, "/auth/logout") != 0) {
+        return 0;
+    }
+
+    if (strcmp(request_info->request_method, "POST") != 0) {
+        mg_printf(
+            client_connection,
+            "HTTP/1.1 405 Method Not Allowed\r\n"
+            "Allow: POST\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n\r\n");
+        // The response is already sent; return its status for CivetWeb's log.
+        return 405;
+    }
+
+    unsigned char token_hash[SESSION_HASH_SIZE];
+    int token_error = read_session_token_hash(client_connection, token_hash);
+    if (token_error != 0) {
+        return token_error;
+    }
+
+    // connect to database
+    PGconn* database_connection = database_connect();
+    if (!database_connection) {
+        mg_send_http_error(client_connection, 503, "Database unavailable");
+        return 503;
+    }
+    puts("Connected to PostgreSQL");
+    // revoke session matching token hash
+    bool revoke_succeeded =
+        database_revoke_session(database_connection, token_hash);
+
+    PQfinish(database_connection);
+
+    if (!revoke_succeeded) {
+        mg_send_http_error(
+            client_connection,
+            503,
+            "Could not revoke session");
+        return 503;
+    }
+
+    mg_printf(
+        client_connection,
+        "HTTP/1.1 204 No Content\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n\r\n");
+
+    return 204;
 }
 
 /*
@@ -657,12 +727,25 @@ int main(void)
     }
 
     // CivetWeb calls these handlers on its worker threads.
-    mg_set_request_handler(server, "/health", health_handler, NULL);
-    mg_set_request_handler(server, "/auth/steam", steam_login_handler, NULL);
+    mg_set_request_handler(
+        server,
+        "/health",
+        health_handler,
+        NULL);
+    mg_set_request_handler(
+        server,
+        "/auth/steam",
+        steam_login_handler,
+        NULL);
     mg_set_request_handler(
         server,
         "/auth/session",
         session_validate_handler,
+        NULL);
+    mg_set_request_handler(
+        server,
+        "/auth/logout",
+        session_revoke_handler,
         NULL);
 
     puts("Auth server listening on http://127.0.0.1:8080");

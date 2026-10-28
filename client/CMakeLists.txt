@@ -1,5 +1,13 @@
 add_library(auth_client STATIC auth.c steam.cpp)
 
+set(AUTH_DEFAULT_SERVER_URL "" CACHE STRING
+    "Default HTTPS auth server address"
+)
+
+target_compile_definitions(auth_client PRIVATE
+    "AUTH_DEFAULT_SERVER_URL=\"${AUTH_DEFAULT_SERVER_URL}\""
+)
+
 target_include_directories(auth_client PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_compile_features(auth_client PRIVATE c_std_11 cxx_std_11)

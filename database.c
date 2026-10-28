@@ -616,3 +616,47 @@ cleanup:
     PQclear(result);
     return outcome;
 }
+
+bool database_revoke_session(PGconn *connection, const unsigned char *token_hash)
+{
+    if (!connection || !token_hash) {
+        return false;
+    }
+
+    if (PQtransactionStatus(connection) != PQTRANS_IDLE) {
+        fprintf(stderr, "Session revocation requires an idle connection\n");
+        return false;
+    }
+
+    const char* query =
+        "UPDATE auth.sessions " // find matching session
+        "SET revoked_at = statement_timestamp() " // record when databse started command
+        "Where token_hash = $1::bytea "
+        "AND revoked_at IS NULL;"; // leave already-revoked alone
+
+    const char* parameters[] = {(const char*)token_hash};
+    const int parameter_lengths[] = {SESSION_HASH_SIZE};
+    const int parameter_formats[] = {1};
+
+    PGresult* result = PQexecParams(
+        connection,
+        query,
+        1,
+        NULL,
+        parameters,
+        parameter_lengths,
+        parameter_formats,
+        0);
+
+    if (!result || PQresultStatus(result) != PGRES_COMMAND_OK) {
+        fprintf(
+            stderr,
+            "Session revocation failed: %s",
+            PQerrorMessage(connection));
+        PQclear(result);
+        return false;
+    }
+
+    PQclear(result);
+    return true;
+}

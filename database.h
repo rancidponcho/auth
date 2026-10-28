@@ -2,6 +2,7 @@
 #define AUTH_DATABASE_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include <libpq-fe.h>
 
@@ -75,5 +76,9 @@ DatabaseValidationResult database_validate_session(
     const unsigned char* token_hash,
     int64_t* out_player_id,
     int64_t* out_expires_at_unix);
+
+bool database_revoke_session(
+    PGconn* connection,
+    const unsigned char* token_hash);
 
 #endif

@@ -7,6 +7,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+// Converts hex token into binary 
 bool session_decode_token(const char* token_hex, unsigned char* out_token)
 {
     static const char hex_digits[] = "0123456789abcdef";
@@ -31,7 +32,7 @@ bool session_decode_token(const char* token_hex, unsigned char* out_token)
     return true;
 }
 
-// Just for hashing
+// Just for hashing user token
 bool session_hash_token(
     const unsigned char* token,
     unsigned char* out_token_hash)
