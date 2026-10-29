@@ -1,8 +1,14 @@
+// Using CLOCK_MONOTONIC provided by Linux
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <inttypes.h>
+#include <time.h>
 
 #include <curl/curl.h>
 #include <civetweb.h>
@@ -16,6 +22,69 @@ typedef struct {
     size_t body_size;
 } SteamResponse;
 
+typedef struct {
+    double available_attempts;
+    uint64_t last_refill_ms;
+    bool initialized;
+} LoginRateLimit;
+
+static bool get_monotonic_ms(uint64_t* milliseconds)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return false;
+    }
+
+    *milliseconds =
+        (uint64_t)now.tv_sec * 1000 +       // whole seconds
+        (uint64_t)now.tv_nsec / 1000000;    // remainder fractions of a second
+
+    return true;
+}
+
+/*
+ * This server allows for 5 login attempts. Each attempt spends one "attempt"
+ * and elapsed time restores one per second, up to five. In short: throttles
+ * login attempts in the case of malicious clients.
+ */
+static bool allow_login_attempt(
+    LoginRateLimit* limit,
+    uint64_t now_ms)
+{
+    const double burst_allowance = 5.0;
+    const double attempts_per_second = 1.0;
+
+    // set initial allowance and save current time
+    if (!limit->initialized) {
+        limit->available_attempts = burst_allowance;
+        limit->last_refill_ms = now_ms;
+        limit->initialized = true;
+    }
+
+    // get time since this function last updated the counter
+    uint64_t elapsed_ms = now_ms - limit->last_refill_ms;
+
+    limit->available_attempts +=
+        (double)elapsed_ms / 1000.0 * attempts_per_second;
+
+    // Long idles refill allowance, but cannot build attempts over 5
+    if (limit->available_attempts > burst_allowance) {
+        limit->available_attempts = burst_allowance;
+    }
+
+    limit->last_refill_ms = now_ms;
+
+    if (limit->available_attempts < 1.0) {
+        return false;
+    }
+
+    // Spend attempt
+    limit->available_attempts -= 1.0;
+    return true;
+}
+
+// does what it says
 static bool bytes_to_hex(
     const unsigned char* bytes,
     size_t byte_count,
@@ -420,7 +489,9 @@ static int steam_login_handler(
     struct mg_connection* client_connection,
     void* user_data)
 {
-    (void)user_data;
+    LoginRateLimit* login_rate_limit = user_data;
+
+    /* ---- CHECK HTTP REQUEST ------------------------------------------ */
 
     const struct mg_request_info* request_info =
         mg_get_request_info(client_connection);
@@ -461,8 +532,48 @@ static int steam_login_handler(
         return 413;
     }
 
+    /* ---- LOGIN RATE LIMIT -------------------------------------------- */
+
+    struct mg_context* server = mg_get_context(client_connection);
+    uint64_t now_ms = 0;
+    bool login_allowed = false;
+
+    // both workers share allowance. Update one worker at a time
+    mg_lock_context(server);
+
+    bool clock_ok = get_monotonic_ms(&now_ms);
+    if (clock_ok) {
+        login_allowed = allow_login_attempt(login_rate_limit, now_ms);
+    }
+
+    mg_unlock_context(server);
+
+    if (!clock_ok) {
+        fprintf(stderr, "Could not read login limiter clock\n");
+        mg_send_http_error(client_connection, 503, "Login unavailable");
+        return 503;
+    }
+
+    if (!login_allowed) {
+        // reject without waiting for the rest of the ticket body
+        mg_disable_connection_keep_alive(client_connection);
+
+        mg_printf(
+            client_connection,
+            "HTTP/1.1 429 Too Many Requests\r\n"
+            "Retry-After: 1\r\n"
+            "Cache-Control: no-store\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n\r\n");
+
+        return 429;
+    }
+
+    /* ---- READ TICKET ------------------------------------------------- */
+
     size_t expected_bytes = (size_t)content_length;
     size_t received_bytes = 0;
+
     // A read can return only part of the body.
     while (received_bytes < expected_bytes) {
         int bytes_read = mg_read(
@@ -489,6 +600,8 @@ static int steam_login_handler(
         "Steam ticket body received (%zu bytes, %zu hex characters)\n",
         received_bytes,
         strlen(ticket_hex));
+
+    /* ---- VERIFY TICKET WITH STEAM ------------------------------------ */
 
     SteamResponse response = {0};
 
@@ -521,6 +634,35 @@ static int steam_login_handler(
     json_t* steam_reply = json_object_get(root, "response");
 
     if (!json_is_object(steam_reply) || json_object_get(steam_reply, "error")) {
+        json_t* steam_error = json_object_get(steam_reply, "error");
+        json_t* error_code = json_object_get(steam_error, "errorcode");
+        if (json_is_integer(error_code)) {
+            fprintf(
+                stderr,
+                "Steam verification error code: %" JSON_INTEGER_FORMAT "\n",
+                json_integer_value(error_code));
+        }
+
+        const char* error_description =
+            json_string_value(json_object_get(steam_error, "errordesc"));
+        if (error_description) {
+            fprintf(
+                stderr,
+                "Steam verification error: %s\n",
+                error_description);
+        }
+
+        // Steam rejected the service ID when requesting this ticket
+        if (json_is_integer(error_code) &&
+            json_integer_value(error_code) == 105) {
+            json_decref(root);
+            mg_send_http_error(
+                client_connection,
+                403,
+                "Steam ticket is not valid for this service");
+            return 403;
+        }
+
         fprintf(stderr, "Steam returned an error or unexpected response\n");
         json_decref(root);
         mg_send_http_error(
@@ -563,7 +705,8 @@ static int steam_login_handler(
 
     printf("Steam ticket verified for SteamID %s\n", steam_id);
 
-    // Open database
+    /* ---- FIND OR CREATE PLAYER --------------------------------------- */
+
     PGconn* database_connection = database_connect();
     if (!database_connection) {
         mg_send_http_error(client_connection, 503, "Database unavailable");
@@ -622,7 +765,8 @@ static int steam_login_handler(
         }
     }
 
-    // Generate session token and hash
+    /* ---- CREATE SESSION ---------------------------------------------- */
+
     unsigned char session_token[SESSION_TOKEN_SIZE];
     unsigned char token_hash[SESSION_HASH_SIZE];
 
@@ -663,7 +807,8 @@ static int steam_login_handler(
 
     printf("Resolved player ID: %" PRId64 "\n", player_id);
 
-    // Send response to client
+    /* ---- SEND LOGIN RESPONSE ----------------------------------------- */
+
     char session_token_hex[sizeof(session_token) * 2 + 1];
     bytes_to_hex(
         session_token,
@@ -697,11 +842,14 @@ static int steam_login_handler(
 
 int main(void)
 {
+    LoginRateLimit login_rate_limit = {0};
+
     // Setting/value pairs, NULL terminated.
     const char* options[] = {
         // Accept local traffic from the HTTPS proxy.
         "listening_ports", "127.0.0.1:8080",
         "num_threads", "2",
+        "request_timeout_ms", "5000",
         NULL
     };
 
@@ -736,7 +884,7 @@ int main(void)
         server,
         "/auth/steam",
         steam_login_handler,
-        NULL);
+        &login_rate_limit);
     mg_set_request_handler(
         server,
         "/auth/session",

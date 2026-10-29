@@ -452,14 +452,14 @@ bool auth_request(void)
  *
  * 5. curl_multi_perform() handles connection setup, sending the ticket,
  *    receiving the server's response as those operations become possible.
- *    Received body bytes go to receive_login_reponse.
+ *    Received body bytes go to receive_login_response().
  *
  * 6. curl_multi_info_read() reports completed requests, including failures.
  *    The result is checked for a curl error, an unsuccessful HTTP status,
  *    or an invalid response body. A valid login response replaces the saved
  *    session, schedules its renewal, and resets the retry count.
  *
- *    Certain network errors and HTTP 502/503/504 schedule delayed retries.
+ *    Certain network errors and HTTP 429/502/503/504 schedule delayed retries.
  *    HTTP 401/403 clears the saved session and stops automatic attempts.
  *
  * 7. Completion cleanup releases the HTTP request and cancels its provider
@@ -467,13 +467,14 @@ bool auth_request(void)
  */
 void auth_update(void)
 {
-    // 1.
+    /* ---- 1. PROCESS PROVIDER CALLBACKS ------------------------------- */
+
     // Process provider callbacks without waiting for a ticket. Just Steam
     // implemented atm
     provider_update();
 
-    // 2.
-    // Check session expiration
+    /* ---- 2. CHECK SAVED SESSION EXPIRY ------------------------------- */
+
     if (session_expires_at_unix != 0) {
         time_t now = time(NULL);
 
@@ -498,8 +499,8 @@ void auth_update(void)
         }
     }
 
-    // 3.
-    // Check for due renewal and request authentication if so
+    /* ---- 3. START DUE RENEWAL OR RETRY ------------------------------- */
+
     if (login_status != AUTH_PENDING && next_login_attempt_at_unix != 0) {
         time_t now = time(NULL);
 
@@ -517,7 +518,8 @@ void auth_update(void)
         }
     }
 
-    // 4.
+    /* ---- 4. START TICKET UPLOAD -------------------------------------- */
+
     if (login_status != AUTH_PENDING) {
         return;
     }
@@ -529,7 +531,7 @@ void auth_update(void)
         return;
     }
 
-    // Tue provider stays ready across ticks. upload_attempted prevents
+    // The provider stays ready across ticks. upload_attempted prevents
     // repeated uploads
     if (!upload_attempted && provider_status() == AUTH_READY) {
         upload_attempted = true;
@@ -548,7 +550,8 @@ void auth_update(void)
         return;
     }
 
-    // 5.
+    /* ---- 5. ADVANCE HTTP REQUEST ------------------------------------- */
+
     // Advance the existing request. active_request_count receives the
     // unfinished count
     int active_request_count = 0;
@@ -566,7 +569,8 @@ void auth_update(void)
         return;
     }
 
-    // 6.
+    /* ---- 6. HANDLE COMPLETED REQUEST --------------------------------- */
+
     // Number of completion notices remaining after each read.
     int messages_remaining = 0;
     CURLMsg* message;
@@ -614,7 +618,8 @@ void auth_update(void)
                 memset(session_token_hex, 0, sizeof(session_token_hex));
                 session_expires_at_unix = 0;
                 next_login_attempt_at_unix = 0;
-            } else if (http_status == 502 ||
+            } else if (http_status == 429 ||
+                       http_status == 502 ||
                        http_status == 503 ||
                        http_status == 504) {
                 schedule_login_retry();
@@ -629,7 +634,8 @@ void auth_update(void)
             puts("Login complete");
         }
 
-        // 7.
+        /* ---- 7. RELEASE REQUEST AND TICKET --------------------------- */
+
         // Cleanup invalidates the notice and clears the active request.
         login_request_cleanup();
         provider_cancel();
